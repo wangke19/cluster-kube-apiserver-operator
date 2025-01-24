@@ -40,9 +40,9 @@ func TestFallback(tt *testing.T) {
 	nodeName, failedRevision := assertFallbackOnNodeStatus(t, cs)
 	assertKasPodAnnotatedOnNode(t, cs, failedRevision, nodeName)
 
-	// clean up
+	// clean up and some extra time is needed to wait for the KAS operator to be ready
 	setUnsupportedConfig(t, cs, getDefaultUnsupportedConfigForCurrentPlatform(t, cs))
-	err := waitForClusterInGoodState(t, cs, clusterStateWaitPollTimeout, clusterMustBeReadyFor)
+	err := waitForClusterInGoodState(t, cs, clusterStateWaitPollTimeout, 5*clusterMustBeReadyFor)
 	require.NoError(t, err)
 }
 
@@ -59,10 +59,11 @@ func waitForClusterInGoodState(t testing.TB, cs clientSet, waitPollTimeout, must
 	t.Helper()
 
 	startTs := time.Now()
-	t.Logf("Waiting %s for the cluster to be in a good condition, interval = 10s, timeout %v", mustBeReadyFor.String(), waitPollTimeout)
+	t.Logf("Waiting %s for the cluster to be in a good condition, interval = 20s, timeout %v", mustBeReadyFor.String(), waitPollTimeout)
 
-	return wait.Poll(10*time.Second, waitPollTimeout, func() (bool, error) {
+	return wait.PollUntilContextTimeout(context.Background(), 20*time.Second, waitPollTimeout, true, func(cxt context.Context) (bool, error) {
 		ckaso, err := cs.Operator.Get(context.TODO(), "cluster", metav1.GetOptions{})
+
 		if err != nil {
 			t.Log(err)
 			return false, nil /*retry*/
@@ -75,7 +76,10 @@ func waitForClusterInGoodState(t testing.TB, cs clientSet, waitPollTimeout, must
 			}
 		}
 
-		if time.Since(startTs) > mustBeReadyFor {
+		ckasoAvailable := v1helpers.IsOperatorConditionTrue(ckaso.Status.Conditions, "StaticPodsAvailable")
+		ckasoProgressing := v1helpers.IsOperatorConditionFalse(ckaso.Status.Conditions, "NodeInstallerProgressing")
+		ckasoDegraded := v1helpers.IsOperatorConditionFalse(ckaso.Status.Conditions, "NodeControllerDegraded")
+		if time.Since(startTs) > mustBeReadyFor && ckasoAvailable && ckasoProgressing && ckasoDegraded {
 			t.Logf("The cluster has been in good condition for %s", mustBeReadyFor.String())
 			return true, nil /*done*/
 		}
@@ -112,7 +116,7 @@ func waitForFallbackDegradedCondition(t testing.TB, cs clientSet, waitPollTimeou
 	t.Helper()
 
 	t.Logf("Waiting for StaticPodFallbackRevisionDegraded condition, interval = 20s, timeout = %v", waitPollTimeout)
-	err := wait.Poll(20*time.Second, waitPollTimeout, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(context.Background(), 20*time.Second, waitPollTimeout, true, func(cxt context.Context) (bool, error) {
 		ckaso, err := cs.Operator.Get(context.TODO(), "cluster", metav1.GetOptions{})
 		if err != nil {
 			t.Logf("unable to get kube-apiserver-operator resource: %v", err)
@@ -236,5 +240,5 @@ func fallbackTimeoutsForCurrentPlatform(t testing.TB, cs clientSet) (time.Durati
 	                                          including the time the server needs to become ready and be noticed by a Load Balancer
 	                                          longer duration allows as to collect logs and the must-gather
 	*/
-	return 10 * time.Minute /*clusterStateWaitPollInterval*/, 1 * time.Minute /*clusterMustBeReadyFor*/, 10 * time.Minute /*waitForFallbackDegradedConditionTimeout*/
+	return 10 * time.Minute /*clusterStateWaitPollInterval*/, 1 * time.Minute /*clusterMustBeReadyFor*/, 18 * time.Minute /*waitForFallbackDegradedConditionTimeout*/
 }
